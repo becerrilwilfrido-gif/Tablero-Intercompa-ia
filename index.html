@@ -5,7 +5,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  
 :root{
   --ink:#0F1E2B; --ink-2:#3D5164; --ink-3:#7B8C9C;
   --paper:#E9EDF1; --card:#FFFFFF; --line:#D7DEE5; --line-soft:#E8EDF1;
@@ -213,7 +212,47 @@ tfoot td:first-child{background:#F4F7F9;font-family:var(--disp)}
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
+/* ============================ Supabase ============================ */
+const SB_URL='https://cebnuiwubybooggjiwhl.supabase.co';
+const SB_KEY='sb_publishable_a4QLyV90jTw83WSJJo71yQ_Nv_F49BF';
+const sb=window.supabase.createClient(SB_URL,SB_KEY);
+const RECORD_COLS=['fid','file_name','k','op','p','d','emp','desp','ben','con','dsc','ban','fol','rep','v'];
+function recToRow(r,fileName){
+  return {fid:r.fid,file_name:fileName,k:r.k,op:r.op||null,p:r.p||null,
+    d:r.d?new Date(r.d).toISOString():null,emp:r.emp||null,desp:r.desp||null,
+    ben:r.ben||null,con:r.con||null,dsc:r.dsc||null,ban:r.ban||null,fol:r.fol||null,
+    rep:r.rep||null,v:r.v};
+}
+function rowToRec(row){
+  return {fid:row.fid,k:row.k,op:row.op,p:row.p,v:+row.v,emp:row.emp||'(sin empresa)',
+    desp:row.desp||'',ben:row.ben||'',con:row.con||'',dsc:row.dsc||'',ban:row.ban||'',
+    fol:row.fol||'',rep:row.rep||'',d:row.d?new Date(row.d).getTime():null};
+}
+async function sbDeleteFile(fileName){
+  const {error}=await sb.from('movimientos').delete().eq('file_name',fileName);
+  if(error)console.error('sbDeleteFile',error);
+}
+async function sbInsertRecords(recs,fileName){
+  if(!recs.length)return;
+  const rows=recs.map(r=>recToRow(r,fileName));
+  for(let i=0;i<rows.length;i+=500){
+    const {error}=await sb.from('movimientos').insert(rows.slice(i,i+500));
+    if(error){console.error('sbInsertRecords',error);throw error;}
+  }
+}
+async function sbLoadAll(){
+  let all=[],from=0;const page=1000;
+  while(true){
+    const {data,error}=await sb.from('movimientos').select('*').range(from,from+page-1);
+    if(error){console.error('sbLoadAll',error);break;}
+    all=all.concat(data);
+    if(data.length<page)break;
+    from+=page;
+  }
+  return all;
+}
 /* ============================ utilidades ============================ */
 const C={pre:'#2E6B5E',cap:'#A6501E',val:'#5B7314',cob:'#0B6E6B',int:'#6244A0',imp:'#96660A',alert:'#A63347',gfijo:'#2C6E9B',gvar:'#9B3B5A',tib:'#4A7C2F',com:'#46536B',iva:'#0B6E6B'};
 const RGB={pre:'46,107,94',cap:'166,80,30',val:'91,115,20',cob:'11,110,107',int:'98,68,160',imp:'150,102,10',gfijo:'44,110,155',gvar:'155,59,90',tib:'74,124,47',com:'70,83,107',iva:'11,110,107'};
@@ -307,6 +346,17 @@ function mapCols(headRow){
   for(const key in ALIAS)for(const a of ALIAS[key]){const i=cells.indexOf(a);if(i>=0){idx[key]=i;break;}}
   return idx;
 }
+function derivePostFields(recs){
+  recs.forEach(r=>{
+    if(r.k==='imp')r.tipo=taxType(r.con,r.dsc);
+    if(r.k==='val'){
+      const m=String(r.dsc).match(/COMISION\s+POR\s+DISPER[CS]ION\s*\$?\s*([\d.,]+)\s*IVA\s*\$?\s*([\d.,]+).*?DISPERSION\s*\$?\s*([\d.,]+)/i);
+      if(m){r.vcom=toNum(m[1]);r.viva=toNum(m[2]);r.vdis=toNum(m[3]);}
+      else{r.vdis=r.v;r.vcom=0;r.viva=0;}
+    }
+    if(r.k==='com')r.sub=/\bIVA\b/.test(norm(r.con))?'IVA sobre comisiones':'Comisión bancaria';
+  });
+}
 function ingest(file,wb){
   const sh=readSheet(wb);
   if(!sh)return {ok:false,msg:'No se encontró la fila de encabezados (EMPRESA / OPERACIÓN / INGRESOS).'};
@@ -340,15 +390,7 @@ function ingest(file,wb){
     if(!r.p){r.p=per;return;}
     if(per&&Math.abs(mi(r.p)-mi(per))>12){r.p=per;r.pfix=true;anom++;}
   });
-  recs.forEach(r=>{
-    if(r.k==='imp')r.tipo=taxType(r.con,r.dsc);
-    if(r.k==='val'){
-      const m=String(r.dsc).match(/COMISION\s+POR\s+DISPER[CS]ION\s*\$?\s*([\d.,]+)\s*IVA\s*\$?\s*([\d.,]+).*?DISPERSION\s*\$?\s*([\d.,]+)/i);
-      if(m){r.vcom=toNum(m[1]);r.viva=toNum(m[2]);r.vdis=toNum(m[3]);}
-      else{r.vdis=r.v;r.vcom=0;r.viva=0;}
-    }
-    if(r.k==='com')r.sub=/\bIVA\b/.test(norm(r.con))?'IVA sobre comisiones':'Comisión bancaria';
-  });
+  derivePostFields(recs);
   S.files.push({id,name:file.name,period:per,n:recs.length,sheet:sh.name,anom});
   S.recs.push(...recs);
   return {ok:true,n:recs.length,period:per};
@@ -358,7 +400,7 @@ function loadFiles(list){
   if(!files.length)return;
   const prog=$('#prog');prog.classList.add('on');
   let i=0,errs=[];
-  const step=()=>{
+  const step=async()=>{
     if(i>=files.length){
       prog.classList.remove('on');prog.firstElementChild.style.width='0';
       if(errs.length)alert('No se pudo leer:\n\n'+errs.join('\n'));
@@ -368,12 +410,18 @@ function loadFiles(list){
     prog.firstElementChild.style.width=Math.round(i/files.length*100)+'%';
     $('#loadStat').textContent=`Leyendo ${i} de ${files.length}: ${f.name}`;
     const dup=S.files.find(x=>x.name===f.name);
-    if(dup){removeFile(dup.id);}
+    if(dup){await removeFile(dup.id);}
     const fr=new FileReader();
-    fr.onload=e=>{
+    fr.onload=async e=>{
       try{
         const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array',cellDates:true});
-        const res=ingest(f,wb); if(!res.ok)errs.push('• '+f.name+': '+res.msg);
+        const res=ingest(f,wb);
+        if(!res.ok){errs.push('• '+f.name+': '+res.msg);}
+        else{
+          $('#loadStat').textContent=`Sincronizando con Supabase: ${f.name}`;
+          const added=S.recs.filter(r=>{const file=S.files.find(x=>x.name===f.name);return file&&r.fid===file.id;});
+          try{await sbInsertRecords(added,f.name);}catch(err){errs.push('• '+f.name+': no se pudo sincronizar con Supabase ('+err.message+')');}
+        }
       }catch(err){errs.push('• '+f.name+': '+err.message);}
       setTimeout(step,10);
     };
@@ -382,9 +430,11 @@ function loadFiles(list){
   };
   step();
 }
-function removeFile(id){
+async function removeFile(id){
+  const file=S.files.find(f=>f.id===id);
   S.files=S.files.filter(f=>f.id!==id);
   S.recs=S.recs.filter(r=>r.fid!==id);
+  if(file){try{await sbDeleteFile(file.name);}catch(err){console.error('removeFile/sbDeleteFile',err);}}
 }
 /* empareja razones sociales con el nombre corto de la empresa del grupo */
 function normalizeCounterparties(){
@@ -1155,7 +1205,12 @@ function rebuild(){
 $('#btnPick').onclick=()=>$('#fin').click();
 $('#fin').onchange=e=>{loadFiles(e.target.files);e.target.value='';};
 $('#btnAll').onclick=()=>{S.months.clear();rebuild();};
-$('#btnClear').onclick=()=>{if(confirm('¿Quitar todos los archivos cargados?')){S.files=[];S.recs=[];S.months.clear();S.f={desp:'',emp:'',q:''};rebuild();}};
+$('#btnClear').onclick=async()=>{
+  if(!confirm('¿Quitar todos los archivos cargados? Esto también los borra de Supabase.'))return;
+  const names=S.files.map(f=>f.name);
+  S.files=[];S.recs=[];S.months.clear();S.f={desp:'',emp:'',q:''};rebuild();
+  for(const n of names){try{await sbDeleteFile(n);}catch(err){console.error('btnClear/sbDeleteFile',err);}}
+};
 const drop=$('#drop');
 ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
@@ -1291,5 +1346,31 @@ $('#btnDemo').onclick=()=>{
   S.recs.push(...recs);rebuild();
 };
 
-rebuild();
+async function initFromSupabase(){
+  const loadStat=$('#loadStat');
+  loadStat.textContent='Cargando desde Supabase…';
+  try{
+    const rows=await sbLoadAll();
+    if(rows.length){
+      const byFile=new Map();
+      rows.forEach(row=>{
+        if(!byFile.has(row.file_name))byFile.set(row.file_name,{id:row.fid,name:row.file_name,recs:[]});
+        byFile.get(row.file_name).recs.push(rowToRec(row));
+      });
+      byFile.forEach(f=>{
+        const pc={};f.recs.forEach(r=>{if(r.p)pc[r.p]=(pc[r.p]||0)+1;});
+        const per=Object.keys(pc).sort((a,b)=>pc[b]-pc[a])[0]||null;
+        S.files.push({id:f.id,name:f.name,period:per,n:f.recs.length});
+        derivePostFields(f.recs);
+        S.recs.push(...f.recs);
+      });
+      normalizeCounterparties();
+    }
+  }catch(err){
+    console.error('initFromSupabase',err);
+    alert('No se pudo conectar con Supabase. Revisa la URL/clave o tu conexión.\n\n'+err.message);
+  }
+  rebuild();
+}
+initFromSupabase();
 </script>
